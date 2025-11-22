@@ -1,9 +1,10 @@
-torch
+torch==2.7.1
 transformers
 datasets
 peft
 bitsandbytes
 pandas
 tensorboard
-tree_sitter_languages == 1.10.0
+tree_sitter_languages
 Levenshtein
+tree_sitter==0.20.4
