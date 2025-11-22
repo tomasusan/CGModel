@@ -1,0 +1,9 @@
+torch
+transformers
+datasets
+peft
+bitsandbytes
+pandas
+tensorboard
+tree_sitter_languages == 1.10.0
+Levenshtein

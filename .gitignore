@@ -1,0 +1,8 @@
+/qwen3_1.7b/
+/results/
+/saves/
+/.idea/
+/__pycache__/
+/Qwen/
+test.py
+part_1_200000.parquet
