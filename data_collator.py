@@ -2,7 +2,8 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 def make_collate_fn(tokenizer):
-    tensor_fields = ["input_ids", "attention_mask", "labels", "language_id"]
+    tensor_fields = ["input_ids", "attention_mask", "labels"]
+    info_tensor_fields = ["language_id"]
     string_fields = ["code", "prompt"]   # 你可以随时增加
 
     def collate_fn(batch):

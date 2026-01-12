@@ -1,17 +1,22 @@
 import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+os.environ['HF_HOME'] = '/data/.cache/huggingface'
+os.environ['HUGGINGFACE_HUB_CACHE'] = '/data/.cache/huggingface'
+os.makedirs('/data/.cache/huggingface', exist_ok=True)
+
 import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling,
+    DataCollatorForLanguageModeling
 )
 from peft import LoraConfig, get_peft_model, TaskType
 from dataset import SFTDataset
 import json
 from config import cfg
+from data_collator import make_collate_fn
 
 
 def print_gpu_memory():
@@ -28,25 +33,28 @@ def print_gpu_memory():
 def train_lora_adapter():
     # ==================== 配置参数 ====================
     base_model_name = cfg.get("model", "teacher_model")
-    output_dir = base_model_name + "/lora/sft_full"
+    output_dir = "lora_train" + base_model_name + "/lora/sft_full"
     data_path = cfg.get("data", "data_path")
 
     # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     print("=" * 50)
-    print("开始LoRA适配器训练 - 全精度版本")
+    print("开始LoRA适配器训练")
     print("=" * 50)
 
     # ==================== 全精度加载模型 ====================
-    print("1. 全精度加载模型...")
+    print("1. 加载模型...")
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model_name,
+        dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        low_cpu_mem_usage=True,
         use_cache=False,
-        torch_dtype=torch.bfloat16,  # 使用bfloat16平衡精度和性能
     )
 
     # 启用梯度检查点以节省显存
@@ -68,16 +76,17 @@ def train_lora_adapter():
     print("2. 配置增强LoRA...")
 
     lora_config = LoraConfig(
-        r=16,  # 增加秩以获得更好性能
+        r=8,  # 增加秩以获得更好性能
         lora_alpha=32,
         target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
             "w1", "w2", "w3",  # 针对Qwen架构
         ],
-        lora_dropout=0.05,
+        lora_dropout=0.1,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
+        inference_mode=False,
     )
 
     model = get_peft_model(model, lora_config)
@@ -92,9 +101,9 @@ def train_lora_adapter():
         print(f"训练数据文件不存在: {data_path}")
         return None
 
-    with open(data_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    print(f"数据集加载: {len(data)} 条样本")
+    #with open(data_path, 'r', encoding='utf-8') as f:
+    #    data = json.load(f)
+    #print(f"数据集加载: {len(data)} 条样本")
 
     # 使用更长的序列长度充分利用显存
     train_dataset = SFTDataset(
@@ -103,10 +112,8 @@ def train_lora_adapter():
         max_seq_len=2048  # 增加序列长度
     )
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,
-    )
+
+    data_collator = make_collate_fn(tokenizer)
 
     print(f"数据预处理完成，共 {len(train_dataset)} 条样本")
 
@@ -120,21 +127,23 @@ def train_lora_adapter():
 
         # 训练周期和批次 - 充分利用80GB显存
         num_train_epochs=3,
-        per_device_train_batch_size=8,  # 大幅增加batch size
-        gradient_accumulation_steps=2,  # 减少梯度累积步数
+        per_device_train_batch_size=1,  # 大幅增加batch size
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=16,  # 减少梯度累积步数
 
         # 优化器参数
-        learning_rate=2e-4,  # 提高学习率
+        learning_rate=1e-4,  # 提高学习率
         weight_decay=0.01,
         warmup_ratio=0.03,
         max_grad_norm=1.0,
+        warmup_steps = 100,
 
         # 精度和内存优化
         bf16=True,  # 使用bfloat16
         gradient_checkpointing=True,
 
         # 数据加载优化
-        dataloader_pin_memory=True,
+        dataloader_pin_memory=False,
         dataloader_num_workers=4,
 
         # 保存和日志
@@ -142,12 +151,12 @@ def train_lora_adapter():
         save_steps=1000,
         save_total_limit=3,
         eval_steps=500,
-        evaluation_strategy="steps",
+        eval_strategy="steps",
 
         # 其他参数
         load_best_model_at_end=True,
         report_to=["tensorboard"],
-        remove_unused_columns=False,
+        remove_unused_columns=True,
         optim="adamw_torch",
 
         # 学习率调度
@@ -236,10 +245,10 @@ def validate_lora_adapter(lora_path):
     try:
         # 全精度加载基础模型
         base_model = AutoModelForCausalLM.from_pretrained(
-            "Qwen/Qwen3-1.7B",
+            cfg.get("model", "teacher_model"),
             device_map="auto",
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
         )
 
         # 加载LoRA适配器

@@ -4,7 +4,7 @@ import subprocess
 if torch.cuda.is_available():
     print("CUDA可用")
     device_count = torch.cuda.device_count()
-    print(f"📊 可用GPU数量: {device_count}")
+    print(f"可用GPU数量: {device_count}")
 
     for i in range(device_count):
         print(f"\n--- GPU {i} 详细信息 ---")
@@ -37,3 +37,16 @@ if parser is None or language is None:
     print("tree-sitter兼容失败")
 else:
     print("tree-sitter兼容检查成功")
+
+import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+from huggingface_hub import hf_hub_download
+import json
+print(json.load(open(hf_hub_download(repo_id='Qwen/Qwen3-32B', filename='config.json'), 'r'))['model_type'])
+
+from huggingface_hub import get_model_types
+model_types = get_model_types()
+print("qwen3" in model_types)
+print("Qwen3-32B" in [model.id for model in model_types])
+

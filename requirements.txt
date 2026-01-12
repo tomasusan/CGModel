@@ -1,8 +1,7 @@
-torch==2.7.1
+torch==2.9.1
 transformers
 datasets
 peft
-bitsandbytes
 pandas
 tensorboard
 tree_sitter_languages

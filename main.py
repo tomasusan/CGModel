@@ -95,7 +95,7 @@ class KGTrainer(Trainer):
         else:
             loss_total = loss
 
-        # AST loss (optional)
+        #AST loss calculation
         ast_loss = torch.tensor(0.0, dtype=loss_total.dtype, device=loss_total.device)
         if self.ast_processor is not None and self.ast_loss_weight > 0.0:
             try:

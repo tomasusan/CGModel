@@ -63,6 +63,8 @@ class SFTDataset(Dataset):
             })
         self.data = items
 
+        print("已加载数据", len(self.data))
+
     def _load_json(self):
         import json
         with open(self.data_path, "r", encoding="utf-8") as f:
