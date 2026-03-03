@@ -1,8 +1,5 @@
-import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-os.environ['HF_HOME'] = '/data/.cache/huggingface'
-os.environ['HUGGINGFACE_HUB_CACHE'] = '/data/.cache/huggingface'
-os.makedirs('/data/.cache/huggingface', exist_ok=True)
+from config import cfg
+cfg.init_HuggingFace()
 
 import torch
 from transformers import (
@@ -10,13 +7,11 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    default_data_collator,
 )
+
 from peft import LoraConfig, get_peft_model, TaskType
 from dataset import SFTDataset
-import json
-from config import cfg
-from data_collator import make_collate_fn
 
 
 def print_gpu_memory():
@@ -31,33 +26,26 @@ def print_gpu_memory():
 
 
 def train_lora_adapter():
-    # ==================== 配置参数 ====================
+
     base_model_name = cfg.get("model", "teacher_model")
-    output_dir = "lora_train" + base_model_name + "/lora/sft_full"
+    output_dir = f"lora/{base_model_name}_code_alignment"
+
     data_path = cfg.get("data", "data_path")
 
-    # 创建输出目录
+    import os
     os.makedirs(output_dir, exist_ok=True)
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    print("=" * 50)
-    print("开始LoRA适配器训练")
-    print("=" * 50)
-
-    # ==================== 全精度加载模型 ====================
-    print("1. 加载模型...")
+    print("Loading model...")
 
     model = AutoModelForCausalLM.from_pretrained(
         base_model_name,
         dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
-        low_cpu_mem_usage=True,
         use_cache=False,
+        low_cpu_mem_usage=True,
     )
 
-    # 启用梯度检查点以节省显存
     model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
 
@@ -69,167 +57,91 @@ def train_lora_adapter():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print("模型加载完成")
-    print_gpu_memory()
-
-    # ==================== 增强的LoRA配置 ====================
-    print("2. 配置增强LoRA...")
+    print("Configuring LoRA...")
 
     lora_config = LoraConfig(
-        r=8,  # 增加秩以获得更好性能
+        r=16,
         lora_alpha=32,
         target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-            "w1", "w2", "w3",  # 针对Qwen架构
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
         ],
-        lora_dropout=0.1,
+        lora_dropout=0.05,
         bias="none",
         task_type=TaskType.CAUSAL_LM,
-        inference_mode=False,
     )
 
     model = get_peft_model(model, lora_config)
 
-    print("LoRA配置完成")
-    model.print_trainable_parameters()
+    print("Preparing dataset...")
 
-    # ==================== 准备训练数据 ====================
-    print("3. 准备训练数据...")
-
-    if not os.path.exists(data_path):
-        print(f"训练数据文件不存在: {data_path}")
-        return None
-
-    #with open(data_path, 'r', encoding='utf-8') as f:
-    #    data = json.load(f)
-    #print(f"数据集加载: {len(data)} 条样本")
-
-    # 使用更长的序列长度充分利用显存
     train_dataset = SFTDataset(
         data_path=data_path,
         tokenizer=tokenizer,
-        max_seq_len=2048  # 增加序列长度
+        max_seq_len=2048,
     )
 
+    print("Dataset size:", len(train_dataset))
 
-    data_collator = make_collate_fn(tokenizer)
+    from torch.utils.data import Subset
 
-    print(f"数据预处理完成，共 {len(train_dataset)} 条样本")
-
-    # ==================== 优化的训练参数 ====================
-    print("4. 配置训练参数...")
+    eval_size = min(200, len(train_dataset))
+    eval_dataset = Subset(train_dataset, list(range(eval_size)))
 
     training_args = TrainingArguments(
-        # 输出配置
         output_dir=output_dir,
-        overwrite_output_dir=True,
 
-        # 训练周期和批次 - 充分利用80GB显存
         num_train_epochs=3,
-        per_device_train_batch_size=1,  # 大幅增加batch size
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=16,  # 减少梯度累积步数
 
-        # 优化器参数
-        learning_rate=1e-4,  # 提高学习率
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=16,
+
+        learning_rate=5e-5,
         weight_decay=0.01,
-        warmup_ratio=0.03,
-        max_grad_norm=1.0,
-        warmup_steps = 100,
 
-        # 精度和内存优化
-        bf16=True,  # 使用bfloat16
-        gradient_checkpointing=True,
-
-        # 数据加载优化
-        dataloader_pin_memory=False,
-        dataloader_num_workers=4,
-
-        # 保存和日志
-        logging_steps=50,
-        save_steps=1000,
-        save_total_limit=3,
-        eval_steps=500,
-        eval_strategy="steps",
-
-        # 其他参数
-        load_best_model_at_end=True,
-        report_to=["tensorboard"],
-        remove_unused_columns=True,
-        optim="adamw_torch",
-
-        # 学习率调度
+        warmup_steps=200,
         lr_scheduler_type="cosine",
+
+        bf16=True,
+        logging_steps=20,
+
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=2,
+
+        eval_strategy="steps",
+        eval_steps=500,
+
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+
+        dataloader_num_workers=4,
+        dataloader_pin_memory=True,
+
+        report_to="tensorboard",
+
+        gradient_checkpointing=True,
+        max_grad_norm=1.0,
     )
-
-    print("训练参数配置完成")
-
-    # ==================== 创建训练器 ====================
-    print("5. 创建训练器...")
-
-    # 创建验证集（取前100条作为验证）
-    eval_dataset = SFTDataset(
-        data_path=data_path,
-        tokenizer=tokenizer,
-        max_seq_len=2048
-    )
-    # 如果数据量大，可以取一部分作为验证集
-    if len(eval_dataset) > 100:
-        from torch.utils.data import Subset
-        eval_indices = list(range(min(100, len(eval_dataset))))
-        eval_dataset = Subset(eval_dataset, eval_indices)
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        data_collator=default_data_collator,
         eval_dataset=eval_dataset,
-        data_collator=data_collator,
     )
 
-    print("训练器创建完成")
+    print("Start training...")
+    trainer.train()
 
-    # ==================== 开始训练 ====================
-    print("6. 开始训练...")
-    print("训练前显存状态:")
-    print_gpu_memory()
-
-    # 检查可训练参数
-    print("检查可训练参数...")
-    trainable_params = 0
-    total_params = 0
-    for name, param in model.named_parameters():
-        total_params += param.numel()
-        if param.requires_grad:
-            trainable_params += param.numel()
-            print(f"可训练参数: {name}, 形状: {param.shape}")
-
-    print(f"总参数: {total_params:,}")
-    print(f"可训练参数: {trainable_params:,}")
-    print(f"可训练参数比例: {trainable_params / total_params * 100:.4f}%")
-
-    # 开始训练
-    train_result = trainer.train()
-
-    # 保存训练指标
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-
-    # ==================== 保存模型 ====================
-    print("7. 保存LoRA适配器...")
-
-    # 保存最佳模型
+    print("Saving LoRA...")
     trainer.save_model()
     tokenizer.save_pretrained(output_dir)
 
-    # 保存训练状态
-    trainer.save_state()
-
-    saved_files = os.listdir(output_dir)
-    print(f"LoRA适配器已保存到: {output_dir}")
-    print(f"保存的文件: {saved_files}")
+    print("Training finished.")
 
     return output_dir
 
@@ -241,6 +153,9 @@ def validate_lora_adapter(lora_path):
     print("\n" + "=" * 50)
     print("验证LoRA适配器")
     print("=" * 50)
+
+    def build_prompt(prompt):
+        return f"<|user|>\n{prompt}\n<|assistant|>\n"
 
     try:
         # 全精度加载基础模型
@@ -262,19 +177,20 @@ def validate_lora_adapter(lora_path):
         tokenizer = AutoTokenizer.from_pretrained(lora_path)
 
         test_cases = [
-            "写一个Python函数计算阶乘：",
-            "用Java实现一个快速排序算法：",
-            "写一个C++函数反转链表："
+            "write a Python code that can compute factorials：",
+            "write a Java code that can do quick sort：",
+            "write a C++ code that can reverse a list："
         ]
 
         for i, test_input in enumerate(test_cases):
             print(f"\n测试案例 {i + 1}: {test_input}")
 
-            inputs = tokenizer(test_input, return_tensors="pt").to(model.device)
+            inputs = tokenizer(build_prompt(test_input), return_tensors="pt").to(model.device)
+
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
-                    max_new_tokens=200,
+                    max_new_tokens=2048,
                     num_return_sequences=1,
                     temperature=0.7,
                     do_sample=True,
@@ -283,7 +199,8 @@ def validate_lora_adapter(lora_path):
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            print(f"生成结果: {response[len(test_input):]}")
+            print("生成结果:")
+            print(response)
 
         return True
 
