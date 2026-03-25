@@ -2,8 +2,9 @@
 import pandas as pd
 
 # =========================
-# 语言映射
+# Language Mapping Dictionary
 # =========================
+# Maps programming language names from the dataset to tree-sitter compatible identifiers
 language_type_map = {
     "C++": "cpp",
     "Java": "java",
@@ -20,26 +21,56 @@ language_type_map = {
     "Rust": "rust",
 }
 
+
 # =========================
-# 代码清洗函数
+# Code Cleaning Function
 # =========================
 def clean_response_text(response):
+    """
+    Extract pure code from markdown-style response text.
+
+    This function uses regex to extract code blocks delimited by triple backticks.
+    If multiple code blocks are found, they are joined with newlines.
+
+    Args:
+        response: Raw response text that may contain code blocks
+
+    Returns:
+        Extracted code string, or empty string if no valid code found
+    """
     if pd.isna(response) or not isinstance(response, str):
         return ""
 
+    # Pattern to match code blocks: ```language\ncode```
     pattern = r'```[\w]*\n(.*?)```'
     matches = re.findall(pattern, response, re.DOTALL)
 
     if matches:
+        # Join multiple code blocks with newlines
         return '\n'.join(matches).strip()
     return ""
 
 
 # =========================
-# 不同语言的包装函数
+# Language-Specific Code Wrapping Functions
 # =========================
 def wrap_code_if_needed(code: str, lang: str):
+    """
+    Wrap code snippets in language-appropriate boilerplate for parsing.
+
+    Some languages (like C#, Java, C/C++, Go) require a class or main function
+    wrapper to be valid, parsable code. This function adds the necessary
+    boilerplate for such languages.
+
+    Args:
+        code: The code snippet to wrap
+        lang: The programming language identifier
+
+    Returns:
+        Wrapped code with appropriate boilerplate, or original code if no wrapper needed
+    """
     if lang == "c_sharp":
+        # C# requires a class with a Main method
         return f"""
 class Program
 {{
@@ -50,6 +81,7 @@ class Program
 }}
 """
     elif lang == "java":
+        # Java requires a class with a main method
         return f"""
 class Main {{
     public static void main(String[] args) {{
@@ -58,6 +90,7 @@ class Main {{
 }}
 """
     elif lang in ["c", "cpp"]:
+        # C/C++ require a main function
         return f"""
 int main() {{
     {code}
@@ -65,6 +98,7 @@ int main() {{
 }}
 """
     elif lang == "go":
+        # Go requires a package declaration and main function
         return f"""
 package main
 func main() {{
@@ -72,114 +106,171 @@ func main() {{
 }}
 """
     else:
+        # Other languages (Python, JavaScript, etc.) don't need wrapping
         return code
 
 
 from ast_utils import ASTProcessor
 
+
 # =========================
-# AST 校验函数
+# AST Validation Function
 # =========================
 def filter_valid_ast_rows(df):
-    print("正在进行 AST 校验...")
+    """
+    Filter dataset rows based on AST parsing success.
 
+    This function attempts to parse each code sample into an Abstract Syntax Tree
+    using tree-sitter. Only samples that parse successfully without syntax errors
+    are kept in the dataset.
+
+    Args:
+        df: Input DataFrame with 'response' and 'programming_language' columns
+
+    Returns:
+        DataFrame containing only rows that passed AST validation
+    """
+    print("Performing AST validation...")
+
+    # Cache for AST processors to avoid recreating for same language
     processors = {}
     valid_mask = []
 
+    # Iterate through each row to validate AST parsing
     for idx, row in df.iterrows():
         code = row["response"]
         raw_lang = row["programming_language"]
 
+        # Map raw language name to tree-sitter compatible identifier
         mapped_lang = language_type_map.get(raw_lang)
 
-        # 语言不支持
+        # Skip if language is not supported
         if mapped_lang is None:
             valid_mask.append(False)
             continue
 
-        # 缓存 processor（避免重复创建）
+        # Get or create cached processor for this language
         if mapped_lang not in processors:
             processors[mapped_lang] = ASTProcessor(mapped_lang)
 
         processor = processors[mapped_lang]
 
-        # parser 初始化失败
+        # Skip if parser initialization failed
         if processor.parser is None:
             valid_mask.append(False)
             continue
 
         try:
+            # Attempt to parse the code
             tree = processor.code_to_ast(code)
 
+            # Check parsing results
             if tree is None:
                 valid_mask.append(False)
             elif tree.root_node.has_error:
+                # Tree-sitter reports syntax errors in the AST
                 valid_mask.append(False)
             else:
+                # Successfully parsed without errors
                 valid_mask.append(True)
 
         except Exception:
+            # Any exception during parsing results in failure
             valid_mask.append(False)
 
+    # Add validation results as a new column
     df["ast_valid"] = valid_mask
+    # Keep only valid rows and drop the temporary column
     df_valid = df[df["ast_valid"]].drop(columns=["ast_valid"])
 
-    print(f"AST 过滤前: {len(df)}")
-    print(f"AST 过滤后: {len(df_valid)}")
-    print(f"AST 成功率: {len(df_valid) / len(df):.4f}")
+    # Print validation statistics
+    print(f"Before AST filtering: {len(df)}")
+    print(f"After AST filtering: {len(df_valid)}")
+    print(f"AST success rate: {len(df_valid) / len(df):.4f}")
 
     return df_valid
 
 
 # =========================
-# 主处理函数
+# Main Processing Function
 # =========================
 def process_parquet_data(file_path, output_path, sample_size=10000):
+    """
+    Main pipeline for processing raw parquet data into a clean, balanced dataset.
 
-    print("正在读取数据...")
+    Processing steps:
+    1. Read parquet file
+    2. Filter to required columns
+    3. Exclude unwanted programming languages
+    4. Clean response text (extract code)
+    5. Validate AST parsing
+    6. Balance dataset by language and difficulty
+    7. Sample to target size
+    8. Save processed dataset
+
+    Args:
+        file_path: Path to input parquet file
+        output_path: Path where processed dataset will be saved
+        sample_size: Target number of samples in final dataset
+
+    Returns:
+        Processed DataFrame
+    """
+    print("Reading data...")
     df = pd.read_parquet(file_path)
 
-    print("正在筛选列...")
+    print("Filtering columns...")
+    # Define target columns for the final dataset
     target_columns = ['prompt', 'adjective', 'programming_language', 'response']
+    # Keep only columns that exist in the dataframe
     existing_columns = [col for col in target_columns if col in df.columns]
     df_filtered = df[existing_columns].copy()
 
-    print("正在过滤编程语言...")
+    print("Filtering programming languages...")
+    # Define languages to exclude from the dataset
     exclude_languages = ['Neo4j database and Cypher', 'relation database and SQL']
     df_filtered = df_filtered[~df_filtered['programming_language'].isin(exclude_languages)]
 
-    print("正在清洗response列...")
+    print("Cleaning response column...")
+    # Extract pure code from responses
     df_filtered['response'] = df_filtered['response'].apply(clean_response_text)
+    # Remove rows with empty responses after cleaning
     df_filtered = df_filtered[df_filtered['response'] != ""]
 
     # =========================
-    # 新增 AST 校验步骤
+    # AST Validation Step
     # =========================
     df_filtered = filter_valid_ast_rows(df_filtered)
 
+    # Verify difficulty column exists
     if 'adjective' not in df_filtered.columns:
-        raise ValueError("数据中未找到难度列（adjective）")
+        raise ValueError("Difficulty column (adjective) not found in data")
 
+    # Target proportions for difficulty levels (approximately balanced)
     adjective_proportions = {
         'Low': 0.336,
         'High': 0.334,
         'Extreme': 0.330
     }
 
-    print("正在按比例采样数据...")
+    print("Sampling data proportionally...")
     sampled_dfs = []
     languages = df_filtered['programming_language'].unique()
 
+    # Calculate base samples per language
     lang_sample_base = sample_size / len(languages)
 
+    # Sample from each language
     for lang in languages:
         lang_df = df_filtered[df_filtered['programming_language'] == lang].copy()
         lang_sampled = []
 
+        # Sample from each difficulty level according to proportions
         for adjective, proportion in adjective_proportions.items():
             diff_df = lang_df[lang_df['adjective'] == adjective].copy()
             diff_sample_size = int(round(lang_sample_base * proportion))
 
+            # Sample or take all if insufficient data
             if len(diff_df) <= diff_sample_size:
                 sampled = diff_df
             else:
@@ -187,23 +278,31 @@ def process_parquet_data(file_path, output_path, sample_size=10000):
 
             lang_sampled.append(sampled)
 
+        # Combine difficulty samples for this language
         sampled_dfs.append(pd.concat(lang_sampled, ignore_index=True))
 
+    # Combine all language samples
     final_df = pd.concat(sampled_dfs, ignore_index=True)
 
+    # If we overshot the target size, randomly sample down
     if len(final_df) > sample_size:
         final_df = final_df.sample(n=sample_size, random_state=42)
 
-    print(f"最终数据量: {len(final_df)}")
+    print(f"Final dataset size: {len(final_df)}")
+
+    # Save processed dataset
     final_df.to_parquet(output_path, index=False)
 
-    print("数据处理完成！")
+    print("Data processing complete!")
 
     return final_df
 
 
+# Main execution block
 if __name__ == "__main__":
+    # Define input and output file paths
     input_file = "part_1_200000.parquet"
     output_file = "data/Output_data.parquet"
 
+    # Run the data processing pipeline
     process_parquet_data(input_file, output_file, sample_size=10000)

@@ -1,52 +1,72 @@
 import torch
 import subprocess
 
+# Check CUDA availability and display GPU information
 if torch.cuda.is_available():
-    print("CUDA可用")
+    print("CUDA is available")
     device_count = torch.cuda.device_count()
-    print(f"可用GPU数量: {device_count}")
+    print(f"Number of available GPUs: {device_count}")
 
+    # Iterate through each GPU device and display detailed information
     for i in range(device_count):
-        print(f"\n--- GPU {i} 详细信息 ---")
-        # 获取设备属性
-        props = torch.cuda.get_device_properties(i)
-        print(f"  设备名称: {props.name}")
-        print(f"  计算能力: {props.major}.{props.minor}")
-        print(f"  总显存: {props.total_memory / (1024 ** 3):.2f} GB")  # 转换为GB
-        print(f"  多处理器数量: {props.multi_processor_count}")
+        print(f"\n--- GPU {i} Detailed Information ---")
 
-        # 获取当前显存使用情况 (可选，需要额外的nvidia-smi调用)
+        # Get device properties using PyTorch
+        props = torch.cuda.get_device_properties(i)
+        print(f"  Device Name: {props.name}")
+        print(f"  Compute Capability: {props.major}.{props.minor}")
+        # Convert total memory from bytes to gigabytes for readability
+        print(f"  Total Memory: {props.total_memory / (1024 ** 3):.2f} GB")
+        print(f"  Multi-processor Count: {props.multi_processor_count}")
+
+        # Attempt to get current memory usage using nvidia-smi (optional)
         try:
             result = subprocess.check_output([
-                'nvidia-smi', '--query-gpu=memory.used',
-                '--format=csv,noheader,nounits', '-i', str(i)
+                'nvidia-smi',
+                '--query-gpu=memory.used',
+                '--format=csv,noheader,nounits',
+                '-i', str(i)
             ], encoding='utf-8')
             memory_used = int(result.strip())
-            print(f"  已用显存: {memory_used} MB")
+            print(f"  Used Memory: {memory_used} MB")
         except Exception as e:
-            print(f"  无法获取已用显存: {e}")
+            print(f"  Unable to retrieve used memory: {e}")
 
 else:
-    print("CUDA不可用，将使用CPU")
+    print("CUDA is not available, will use CPU")
 
-print("检查tree-sitter兼容...")
+# Check tree-sitter compatibility for AST parsing
+print("Checking tree-sitter compatibility...")
 from tree_sitter_languages import get_language, get_parser
+
+# Attempt to get parser and language for C++ as a test
 parser = get_parser('cpp')
 language = get_language('cpp')
-if parser is None or language is None:
-    print("tree-sitter兼容失败")
-else:
-    print("tree-sitter兼容检查成功")
 
+if parser is None or language is None:
+    print("tree-sitter compatibility check failed")
+else:
+    print("tree-sitter compatibility check passed")
+
+# Set HuggingFace mirror endpoint for improved accessibility in certain regions
 import os
+
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
+# Test HuggingFace Hub connectivity by downloading a config file
 from huggingface_hub import hf_hub_download
 import json
-print(json.load(open(hf_hub_download(repo_id='Qwen/Qwen3-32B', filename='config.json'), 'r'))['model_type'])
 
+# Download config.json for Qwen3-32B model and extract model type
+config_path = hf_hub_download(repo_id='Qwen/Qwen3-32B', filename='config.json')
+model_type = json.load(open(config_path, 'r'))['model_type']
+print(f"Model type from config: {model_type}")
+
+# Check available model types on HuggingFace Hub
 from huggingface_hub import get_model_types
-model_types = get_model_types()
-print("qwen3" in model_types)
-print("Qwen3-32B" in [model.id for model in model_types])
 
+model_types = get_model_types()
+print(f"'qwen3' in model types: {'qwen3' in model_types}")
+
+# Check if specific model exists in the list of available models
+print(f"'Qwen3-32B' in model list: {'Qwen3-32B' in [model.id for model in model_types]}")
