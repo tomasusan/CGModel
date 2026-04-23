@@ -50,68 +50,7 @@ def clean_response_text(response):
         return '\n'.join(matches).strip()
     return ""
 
-
-# =========================
-# Language-Specific Code Wrapping Functions
-# =========================
-def wrap_code_if_needed(code: str, lang: str):
-    """
-    Wrap code snippets in language-appropriate boilerplate for parsing.
-
-    Some languages (like C#, Java, C/C++, Go) require a class or main function
-    wrapper to be valid, parsable code. This function adds the necessary
-    boilerplate for such languages.
-
-    Args:
-        code: The code snippet to wrap
-        lang: The programming language identifier
-
-    Returns:
-        Wrapped code with appropriate boilerplate, or original code if no wrapper needed
-    """
-    if lang == "c_sharp":
-        # C# requires a class with a Main method
-        return f"""
-class Program
-{{
-    static void Main(string[] args)
-    {{
-        {code}
-    }}
-}}
-"""
-    elif lang == "java":
-        # Java requires a class with a main method
-        return f"""
-class Main {{
-    public static void main(String[] args) {{
-        {code}
-    }}
-}}
-"""
-    elif lang in ["c", "cpp"]:
-        # C/C++ require a main function
-        return f"""
-int main() {{
-    {code}
-    return 0;
-}}
-"""
-    elif lang == "go":
-        # Go requires a package declaration and main function
-        return f"""
-package main
-func main() {{
-    {code}
-}}
-"""
-    else:
-        # Other languages (Python, JavaScript, etc.) don't need wrapping
-        return code
-
-
 from ast_utils import ASTProcessor
-
 
 # =========================
 # AST Validation Function
